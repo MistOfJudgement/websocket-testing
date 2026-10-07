@@ -9,6 +9,7 @@
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260905.1",
     "@types/node": "^26.4.1",
     "typescript": "^5.5.2",
     "wrangler": "^4.129.0"

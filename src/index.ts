@@ -1,65 +1,53 @@
-import { DurableObject } from "cloudflare:workers";
+import html from "../public/index.html";
+import { SignalingRoom } from "./signaling-room";
+export { SignalingRoom };
 
-/**
- * Welcome to Cloudflare Workers! This is your first Durable Objects application.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your Durable Object in action
- * - Run `npm run deploy` to publish your application
- *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/durable-objects
- */
-
-
-/** A Durable Object's behavior is defined in an exported Javascript class */
-export class MyDurableObject extends DurableObject {
-	/**
-	 * The constructor is invoked once upon creation of the Durable Object, i.e. the first call to
-	 * 	`DurableObjectStub::get` for a given identifier (no-op constructors can be omitted)
-	 *
-	 * @param ctx - The interface for interacting with Durable Object state
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 */
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
-	}
-
-	/**
-	 * The Durable Object exposes an RPC method sayHello which will be invoked when a Durable
-	 *  Object instance receives a request from a Worker via the same method invocation on the stub
-	 *
-	 * @param name - The name provided to a Durable Object instance from a Worker
-	 * @returns The greeting to be sent back to the Worker
-	 */
-	async sayHello(name: string): Promise<string> {
-		return `Hello, ${name}!`;
-	}
+export interface Env {
+    SIGNALING_ROOM: DurableObjectNamespace<SignalingRoom>;
 }
 
 export default {
-	/**
-	 * This is the standard fetch handler for a Cloudflare Worker
-	 *
-	 * @param request - The request submitted to the Worker from the client
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 * @param ctx - The execution context of the Worker
-	 * @returns The response to be sent back to the client
-	 */
-	async fetch(request, env, ctx): Promise<Response> {
-		// Create a stub to open a communication channel with the Durable Object
-		// instance named "foo".
-		//
-		// Requests from all Workers to the Durable Object instance named "foo"
-		// will go to a single remote Durable Object instance.
-		const stub = env.MY_DURABLE_OBJECT.getByName("foo");
+    async fetch(request: Request, env: Env): Promise<Response> {
+        const url = new URL(request.url);
+        console.log(`\n========================================`);
+        console.log(`[Worker] Incoming Request: ${request.method} ${url.pathname}${url.search}`);
 
-		// Call the `sayHello()` RPC method on the stub to invoke the method on
-		// the remote Durable Object instance.
-		const greeting = await stub.sayHello("world");
+        // Match WebSocket signaling route: /room/:roomId
+        const match = url.pathname.match(/^\/room\/([^\/]+)/);
+        if (match) {
+            const roomId = match[1];
+            const peerId = url.searchParams.get("peerId");
+            const upgradeHeader = request.headers.get("Upgrade");
 
-		return new Response(greeting);
-	},
-} satisfies ExportedHandler<Env>;
+            console.log(`[Worker] Room Route Hit. RoomID: "${roomId}", PeerID: "${peerId}", Upgrade Header: "${upgradeHeader}"`);
+
+            if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
+                console.warn(`[Worker] ⚠️ Request rejected: Missing or invalid Upgrade header.`);
+                return new Response("Expected WebSocket connection. Connect using ws:// or wss://", { status: 426 });
+            }
+
+            if (!peerId) {
+                console.warn(`[Worker] ⚠️ Request rejected: Missing 'peerId' query parameter.`);
+                return new Response("Missing 'peerId' query parameter", { status: 400 });
+            }
+
+            try {
+                console.log(`[Worker] Fetching DO stub for room: "${roomId}"`);
+                const id = env.SIGNALING_ROOM.idFromName(roomId);
+                const stub = env.SIGNALING_ROOM.get(id);
+
+                console.log(`[Worker] Forwarding request to DO stub...`);
+                const response = await stub.fetch(request);
+
+                console.log(`[Worker] DO returned response status: ${response.status}`);
+                return response;
+            } catch (err: any) {
+                console.error(`[Worker] 💥 Unhandled Exception when forwarding to DO:`, err?.stack || err);
+                return new Response(`Worker Error: ${err?.message || err}`, { status: 500 });
+            }
+        }
+
+        console.log(`[Worker] Path "${url.pathname}" did not match /room/* endpoint.`);
+        return new Response(html, { headers: { "Content-Type": "text/html" } });
+    },
+};

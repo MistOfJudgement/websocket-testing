@@ -38,7 +38,8 @@
 		"skipLibCheck": true,
 		"types": [
 			"./worker-configuration.d.ts",
-			"node"
+			"node",
+			"@cloudflare/worker-types"
 		]
 	}
 }
