@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <title>Page Title</title>
+</head>
+
+<body>
+    <div id="log">
+
+    </div>
+    <input type="text" id="input">
+    <button id="submit" type="submit" onclick="submit()">Submit</button>
+
+    <p id="status">Disconnected</p>
+    <button id="connect" onclick="connect()">Connect</button>
+    <script>
+        // @type {WebSocket}
+        let ws = null;
+        const logDiv = document.getElementById("log")
+        const inputElement = document.getElementById("input")
+        const statusText = document.getElementById("status")
+        function log(source, text) {
+            const str = `[${source}]: ${text}`
+            const temp = document.createElement("p")
+            temp.innerHTML = str
+            logDiv.appendChild(temp)
+        }
+        function connect() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${location.host}/api/echo`
+
+            ws = new WebSocket(wsUrl)
+
+            statusText.innerHTML = "connecting"
+            ws.onopen = () => {
+                log("System", "Connected to server")
+                statusText.innerHTML = "Connected"
+            }
+
+            ws.onmessage = async (event) => {
+                log("Server", event.data)
+            }
+
+            ws.onclose = () => {
+                log("System", "Disconnected")
+                statusText.innerHTML = "disconnected2"
+            }
+        }
+        function submit() {
+            const val = inputElement.value.trim()
+            if (val && ws && ws.readyState === WebSocket.OPEN) {
+                log("Client", val)
+                ws.send(val)
+            } else {
+                log("Client", "unable to send")
+            }
+        }
+
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <title>Chat Room</title>
+</head>
+
+<body>
+    <h1>Chat Room</h1>
+    <p id="status">Disconnected</p>
+    <input type="text" name="room" id="roomInput">
+    <button type="button" onclick="connect()">Join Room</button>
+    <br>
+
+    <div id="log"></div>
+    <input type="text" name="input" id="input">
+    <button type="submit" onclick="submit()">Submit</button>
+
+    <script>
+        /** @type {WebSocket} */
+        let ws = undefined
+        const roomInput = document.getElementById("roomInput")
+        const textInput = document.getElementById("input")
+        const logDiv = document.getElementById("log")
+        const statusText = document.getElementById("status")
+        /**
+         * @param {number} timestamp
+         * @param {String} source
+         * @param {String} messsage
+         */
+        function log(timestamp, source, message) {
+            const output = `[${new Date(timestamp).toDateString()}] (${source}): ${message}`
+            console.log(output)
+            const messageElem = document.createElement("p")
+            messageElem.innerHTML = output
+            logDiv.appendChild(messageElem)
+        }
+
+        function connect() {
+            const roomId = roomInput.value
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${location.host}/api/chat/${roomId}`
+
+            ws = new WebSocket(wsUrl)
+
+            statusText.innerHTML = "connecting"
+            ws.onopen = () => {
+                log(Date.now(), "System", "Connected to server in "),
+                    statusText.innerHTML = "Connected in " + roomId
+            }
+
+            ws.onmessage = async (event) => {
+                const recieved = JSON.parse(event.data)
+                log(recieved.timestamp, recieved.source, recieved.message)
+            }
+
+            ws.onclose = () => {
+                log(Date.now(), "System", "Disconnected")
+                statusText.innerHTML = "disconnected2"
+            }
+        }
+        function submit() {
+            const val = textInput.value.trim()
+            if (val && ws && ws.readyState === WebSocket.OPEN) {
+                log(Date.now(), "Client", val)
+                ws.send(val)
+            } else {
+                log(Date.now(), "Client", "unable to send")
+            }
+        }
+
+    </script>
+</body>
+
+</html>

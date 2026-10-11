@@ -39,7 +39,6 @@
 		"types": [
 			"./worker-configuration.d.ts",
 			"node",
-			"@cloudflare/worker-types"
 		]
 	}
 }

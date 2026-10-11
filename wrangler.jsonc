@@ -9,6 +9,10 @@
       {
         "name": "SIGNALING_ROOM",
         "class_name": "SignalingRoom"
+      },
+      {
+        "name": "CHAT_LOBBY_ROOM",
+        "class_name": "ChatLobbyRoom"
       }
     ]
   },
@@ -17,9 +21,9 @@
 			"type": "durable-object",
 			"storage": "sqlite",
 		},
-    "Signaler": {
+    "ChatLobbyRoom": {
       "type": "durable-object",
-      "state": "deleted"
+      "storage": "sqlite"
     }
 	},
   "rules": [
