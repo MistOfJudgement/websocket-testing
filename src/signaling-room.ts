@@ -1,35 +1,27 @@
 import { DurableObject } from "cloudflare:workers";
 
-interface message {
-    timestamp: number
-    source: string
-    message: string
-}
-function genId() {
-    let result = '';
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const charactersLength = characters.length;
-    let counter = 0;
-    while (counter < 5) {
-        result += characters.charAt(Math.floor(Math.random() * charactersLength));
-        counter += 1;
-    }
-    return result;
-}
+type IncomingMessage =
+    | { type: "authenticate"; password: string }
+    | { type: "data"; payload: string };
+
+type OutgoingMessage =
+    | { type: "authenticated"; role: "host" | "client"; id: string }
+    | { type: "joined"; source: string; timestamp: number }
+    | { type: "left"; source: string; timestamp: number }
+    | { type: "data"; payload: string; from: string; timestamp: number }
+    | { type: "error"; message: string };
+
 export class SignalingRoom extends DurableObject {
+    private hostSocket: WebSocket | null = null;
+    private roomPassword: string | null = null;
+
     constructor(ctx: DurableObjectState, env: Env) {
         super(ctx, env);
     }
 
     async fetch(request: Request): Promise<Response> {
-        const url = new URL(request.url);
-        // const room = url.searchParams.get("roomid");
         const upgradeHeader = request.headers.get("Upgrade");
-
-
-
         if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
-            console.log("1")
             return new Response("Expected WebSocket connection", { status: 426 });
         }
 
@@ -37,16 +29,13 @@ export class SignalingRoom extends DurableObject {
             const webSocketPair = new WebSocketPair();
             const [client, server] = Object.values(webSocketPair);
 
-            console.log("2")
             this.ctx.acceptWebSocket(server);
-            const id = genId()
-            server.serializeAttachment(id)
-            // server.serializeAttachment(room);
 
-            this.broadcast({ source: "server", timestamp: Date.now(), message: `User ${id} joined` })
+            // Using Cloudflare's built-in unique id or fallback crypto random for client session tracking
+            const clientId = crypto.randomUUID().substring(0, 5);
+            server.serializeAttachment({ id: clientId, authenticated: false });
 
             return new Response(null, { status: 101, webSocket: client });
-
         } catch (err: any) {
             return new Response(`Internal DO Error: ${err?.message || err}`, { status: 500 });
         }
@@ -54,37 +43,84 @@ export class SignalingRoom extends DurableObject {
 
     async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
         try {
-
             const rawText = typeof message === "string" ? message : new TextDecoder().decode(message);
-
-            const id = ws.deserializeAttachment();
-            let output: message = {
-                message: rawText,
-                timestamp: Date.now(),
-                source: id ?? "UNKNOWN"
+            const attachment = ws.deserializeAttachment() as { id: string; authenticated: boolean };
+            console.log(`[DO RECV] From ${attachment.id}:`, rawText); // <-- ADD THIS
+            let data: IncomingMessage;
+            try {
+                data = JSON.parse(rawText);
+            } catch {
+                ws.send(JSON.stringify({ type: "error", message: "Invalid JSON format" } as OutgoingMessage));
+                return;
             }
-            console.log(JSON.stringify(output))
-            this.broadcast((output));
+
+            // --- Authentication Phase ---
+            if (!attachment.authenticated) {
+                if (data.type === "authenticate") {
+                    if (this.hostSocket === null) {
+                        // Claim room as Host
+                        this.hostSocket = ws;
+                        this.roomPassword = data.password;
+                        attachment.authenticated = true;
+                        ws.serializeAttachment(attachment);
+
+                        ws.send(JSON.stringify({ type: "authenticated", role: "host", id: attachment.id } as OutgoingMessage));
+                        this.broadcast({ type: "joined", source: attachment.id, timestamp: Date.now() }, ws);
+                    } else {
+                        // Authenticate as Client
+                        if (data.password === this.roomPassword) {
+                            attachment.authenticated = true;
+                            ws.serializeAttachment(attachment);
+                            console.log("client", attachment.id)
+                            ws.send(JSON.stringify({ type: "authenticated", role: "client", id: attachment.id } as OutgoingMessage));
+                            this.broadcast({ type: "joined", source: attachment.id, timestamp: Date.now() }, ws);
+                        } else {
+                            ws.send(JSON.stringify({ type: "error", message: "Invalid password" } as OutgoingMessage));
+                            ws.close(4003, "Authentication failed");
+                        }
+                    }
+                } else {
+                    ws.send(JSON.stringify({ type: "error", message: "Must authenticate first" } as OutgoingMessage));
+                }
+                return;
+            }
+
+            // --- Game Data Handling ---
+            if (data.type === "data") {
+                const wrappedData: OutgoingMessage = {
+                    type: "data",
+                    payload: data.payload,
+                    from: attachment.id,
+                    timestamp: Date.now()
+                };
+                if (ws === this.hostSocket) {
+                    this.broadcast(wrappedData, ws);
+                } else {
+                    this.hostSocket?.send(JSON.stringify(wrappedData))
+                }
+            }
 
         } catch (err: any) {
-            console.error(`[DO:SignalingRoom] 💥 Error in webSocketMessage:`, err?.stack || err);
+            console.error(`[DO] Error:`, err);
         }
     }
 
     async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
         try {
-            const attachment: string | undefined = ws.deserializeAttachment();
-            const peerId = attachment || "UNKNOWN";
-
+            const attachment = ws.deserializeAttachment() as { id: string; authenticated: boolean };
             ws.close(code, "Closed");
 
-            if (attachment) {
-                this.broadcast(
-                    { message: `${peerId} left`, source: "server", timestamp: Date.now() }
-                );
+            if (ws === this.hostSocket) {
+                this.hostSocket = null;
+                this.roomPassword = null;
+                for (const s of this.ctx.getWebSockets()) {
+                    s.close(1000, "Host left");
+                }
+            } else if (attachment?.authenticated) {
+                this.broadcast({ type: "left", source: attachment.id, timestamp: Date.now() });
             }
         } catch (err: any) {
-            console.error(`[DO:SignalingRoom] 💥 Error in webSocketClose:`, err?.stack || err);
+            console.error(`[DO] Close Error:`, err);
         }
     }
 
@@ -92,19 +128,17 @@ export class SignalingRoom extends DurableObject {
         ws.close(1011, "WebSocket error");
     }
 
-    private broadcast(message: message, excludePeerId?: string): void {
-        const sockets = this.ctx.getWebSockets();
-        let sentCount = 0;
-
-        for (const socket of sockets) {
+    private broadcast(message: OutgoingMessage, excludeSocket?: WebSocket): void {
+        const payloadString = JSON.stringify(message);
+        for (const socket of this.ctx.getWebSockets()) {
             try {
-                const attachment: string | null = socket.deserializeAttachment();
-                if (attachment && attachment !== excludePeerId) {
-                    socket.send(JSON.stringify(message));
-                    sentCount++;
+                if (socket === excludeSocket) continue;
+                const att = socket.deserializeAttachment() as { authenticated: boolean };
+                if (att && att.authenticated) {
+                    socket.send(payloadString);
                 }
             } catch (err) {
-                console.error("[DO:SignalingRoom] Failed to broadcast to a socket:", err);
+                console.error("Broadcast failed:", err);
             }
         }
     }
